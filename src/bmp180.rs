@@ -54,8 +54,7 @@ impl Mode {
 }
 
 /// BMP180, or BMP085.
-pub struct BMP180<I> {
-    device: I,
+pub struct BMP180NonOwned<I2C> {
     mode: Mode,
     ac1: i16,
     ac2: i16,
@@ -68,13 +67,14 @@ pub struct BMP180<I> {
     mb: i16,
     mc: i16,
     md: i16,
+    _marker: core::marker::PhantomData<I2C>,
 }
 
-impl<I: Write + WriteRead + Read> BMP180<I> {
+impl<I2C: Write + WriteRead + Read> BMP180NonOwned<I2C> {
     /// Create device driver instance.
-    pub fn new(i2c: I) -> Self {
-        BMP180 {
-            device: i2c,
+    pub fn new(i2c: &mut I2C) -> Self {
+        BMP180NonOwned {
+            _marker: core::marker::PhantomData,
             mode: Mode::UltraHighResolution,
             ac1: 408,
             ac2: -72,
@@ -91,47 +91,47 @@ impl<I: Write + WriteRead + Read> BMP180<I> {
     }
 
     /// Read calibration data from the EEPROM of BMP180.
-    pub fn init(&mut self) {
-        self.ac1 = self.read_i16(BMP180_CAL_AC1);
-        self.ac2 = self.read_i16(BMP180_CAL_AC2);
-        self.ac3 = self.read_i16(BMP180_CAL_AC3);
+    pub fn init(&mut self, i2c: &mut I2C) {
+        self.ac1 = self.read_i16(i2c, BMP180_CAL_AC1);
+        self.ac2 = self.read_i16(i2c, BMP180_CAL_AC2);
+        self.ac3 = self.read_i16(i2c, BMP180_CAL_AC3);
 
-        self.ac4 = self.read_u16(BMP180_CAL_AC4);
-        self.ac5 = self.read_u16(BMP180_CAL_AC5);
-        self.ac6 = self.read_u16(BMP180_CAL_AC6);
+        self.ac4 = self.read_u16(i2c, BMP180_CAL_AC4);
+        self.ac5 = self.read_u16(i2c, BMP180_CAL_AC5);
+        self.ac6 = self.read_u16(i2c, BMP180_CAL_AC6);
 
-        self.b1 = self.read_i16(BMP180_CAL_B1);
-        self.b2 = self.read_i16(BMP180_CAL_B2);
-        self.mb = self.read_i16(BMP180_CAL_MB);
-        self.mc = self.read_i16(BMP180_CAL_MC);
-        self.md = self.read_i16(BMP180_CAL_MD);
+        self.b1 = self.read_i16(i2c, BMP180_CAL_B1);
+        self.b2 = self.read_i16(i2c, BMP180_CAL_B2);
+        self.mb = self.read_i16(i2c, BMP180_CAL_MB);
+        self.mc = self.read_i16(i2c, BMP180_CAL_MC);
+        self.md = self.read_i16(i2c, BMP180_CAL_MD);
     }
 
     /// read uncompensated temperature value
     #[inline]
-    fn get_ut<D: DelayMs<u8>>(&mut self, delay: &mut D) -> i32 {
-        self.write(&[BMP180_CONTROL, BMP180_READTEMPCMD]);
+    fn get_ut<D: DelayMs<u8>>(&mut self, i2c: &mut I2C, delay: &mut D) -> i32 {
+        self.write(i2c, &[BMP180_CONTROL, BMP180_READTEMPCMD]);
         delay.delay_ms(5);
-        self.read_i16(BMP180_TEMPDATA) as i32
+        self.read_i16(i2c, BMP180_TEMPDATA) as i32
     }
 
     /// read uncompensated pressure value
     #[inline]
-    fn get_up<D: DelayMs<u8>>(&mut self, delay: &mut D) -> i32 {
+    fn get_up<D: DelayMs<u8>>(&mut self, i2c: &mut I2C, delay: &mut D) -> i32 {
         let oss = self.mode.oversampling_settings();
-        self.write(&[BMP180_CONTROL, BMP180_READPRESSURECMD + (oss << 6)]);
+        self.write(i2c, &[BMP180_CONTROL, BMP180_READPRESSURECMD + (oss << 6)]);
         self.mode.wait_conversion(delay);
 
-        let msb = self.read_u8(BMP180_PRESSUREDATA) as i32;
-        let lsb = self.read_u8(BMP180_PRESSUREDATA + 1) as i32;
-        let xlsb = self.read_u8(BMP180_PRESSUREDATA + 2) as i32;
+        let msb = self.read_u8(i2c, BMP180_PRESSUREDATA) as i32;
+        let lsb = self.read_u8(i2c, BMP180_PRESSUREDATA + 1) as i32;
+        let xlsb = self.read_u8(i2c, BMP180_PRESSUREDATA + 2) as i32;
 
         ((msb << 16) + (lsb << 8) + xlsb) >> (8 - oss)
     }
 
     /// Calculate true temperature, resolution is 0.1C
-    pub fn get_temperature<D: DelayMs<u8>>(&mut self, delay: &mut D) -> f32 {
-        let ut = self.get_ut(delay);
+    pub fn get_temperature<D: DelayMs<u8>>(&mut self, i2c: &mut I2C, delay: &mut D) -> f32 {
+        let ut = self.get_ut(i2c, delay);
 
         let x1 = ((ut - self.ac6 as i32) * self.ac5 as i32) >> 15;
         let x2 = ((self.mc as i32) << 11) / (x1 + self.md as i32);
@@ -140,11 +140,11 @@ impl<I: Write + WriteRead + Read> BMP180<I> {
     }
 
     /// Calculate true pressure, in Pa
-    pub fn get_pressure<D: DelayMs<u8>>(&mut self, delay: &mut D) -> i32 {
+    pub fn get_pressure<D: DelayMs<u8>>(&mut self, i2c: &mut I2C, delay: &mut D) -> i32 {
         let oss = self.mode.oversampling_settings();
 
-        let ut = self.get_ut(delay);
-        let up = self.get_up(delay);
+        let ut = self.get_ut(i2c, delay);
+        let up = self.get_up(i2c, delay);
 
         let x1 = ((ut - self.ac6 as i32) * self.ac5 as i32) >> 15;
         let x2 = ((self.mc as i32) << 11) / (x1 + self.md as i32);
@@ -179,49 +179,81 @@ impl<I: Write + WriteRead + Read> BMP180<I> {
     }
 
     /// Calculate absolute altitude
-    pub fn calculate_altitude<D: DelayMs<u8>>(&mut self, delay: &mut D, sealevel_pa: f32) -> f32 {
-        let pa = self.get_pressure(delay) as f32;
+    pub fn calculate_altitude<D: DelayMs<u8>>(&mut self, i2c: &mut I2C, delay: &mut D, sealevel_pa: f32) -> f32 {
+        let pa = self.get_pressure(i2c, delay) as f32;
         44330.0 * (1.0 - (pa / sealevel_pa).pow(1.0 / 5.255))
     }
 
     /// Calculate pressure at sea level
     pub fn calculate_sealevel_pressure<D: DelayMs<u8>>(
         &mut self,
+        i2c: &mut I2C,
         delay: &mut D,
         altitude_m: f32,
     ) -> u32 {
-        let pressure = self.get_pressure(delay) as f32;
+        let pressure = self.get_pressure(i2c, delay) as f32;
         let p0 = pressure / (1.0 - altitude_m / 44330.0).pow(5.255);
         p0 as u32
     }
 
-    pub fn release(self) -> I {
-        self.device
+    fn write(&mut self, i2c: &mut I2C, data: &[u8]) {
+        let _ = i2c.write(BMP180_I2CADDR, data);
     }
 
-    fn write(&mut self, data: &[u8]) {
-        let _ = self.device.write(BMP180_I2CADDR, data);
-    }
-
-    fn read_u8(&mut self, reg: u8) -> u8 {
+    fn read_u8(&mut self, i2c: &mut I2C, reg: u8) -> u8 {
         let mut buf = [0u8];
-        let _ = self.device.write_read(BMP180_I2CADDR, &[reg], &mut buf[..]);
+        let _ = i2c.write_read(BMP180_I2CADDR, &[reg], &mut buf[..]);
         buf[0]
     }
 
-    fn read_i16(&mut self, reg: u8) -> i16 {
+    fn read_i16(&mut self, i2c: &mut I2C, reg: u8) -> i16 {
         let mut buf = [0u8; 2];
         // buf[0] = self.read_u8(reg);
         // buf[1] = self.read_u8(reg + 1);
-        let _ = self.device.write_read(BMP180_I2CADDR, &[reg], &mut buf[..]);
+        let _ = i2c.write_read(BMP180_I2CADDR, &[reg], &mut buf[..]);
         i16::from_be_bytes(buf)
     }
 
-    fn read_u16(&mut self, reg: u8) -> u16 {
+    fn read_u16(&mut self, i2c: &mut I2C, reg: u8) -> u16 {
         let mut buf = [0u8; 2];
         // buf[0] = self.read_u8(reg);
         // buf[1] = self.read_u8(reg + 1);
-        let _ = self.device.write_read(BMP180_I2CADDR, &[reg], &mut buf[..]);
+        let _ = i2c.write_read(BMP180_I2CADDR, &[reg], &mut buf[..]);
         u16::from_be_bytes(buf)
+    }
+}
+
+pub struct BMP180<I2C>(I2C, BMP180NonOwned<I2C>);
+
+impl<I2C: Write + WriteRead + Read> BMP180<I2C> {
+    /// Create device driver instance.
+    pub fn new(mut i2c: I2C) -> Self {
+        let bmp180 = BMP180NonOwned::new(&mut i2c);
+        BMP180(i2c, bmp180)
+    }
+
+    /// Read calibration data from the EEPROM of BMP180.
+    pub fn init(&mut self) {
+        self.1.init(&mut self.0)
+    }
+
+    /// Calculate true temperature, resolution is 0.1C
+    pub fn get_temperature<D: DelayMs<u8>>(&mut self, delay: &mut D) -> f32 {
+        self.1.get_temperature(&mut self.0, delay)
+    }
+
+    /// Calculate true pressure, in Pa
+    pub fn get_pressure<D: DelayMs<u8>>(&mut self, delay: &mut D) -> i32 {
+        self.1.get_pressure(&mut self.0, delay)
+    }
+
+    /// Calculate absolute altitude
+    pub fn calculate_altitude<D: DelayMs<u8>>(&mut self, delay: &mut D, sealevel_pa: f32) -> f32 {
+        self.1.calculate_altitude(&mut self.0, delay, sealevel_pa)
+    }
+
+    /// Calculate pressure at sea level
+    pub fn calculate_sealevel_pressure<D: DelayMs<u8>>(&mut self, delay: &mut D, altitude_m: f32) -> u32 {
+        self.1.calculate_sealevel_pressure(&mut self.0, delay, altitude_m)
     }
 }
