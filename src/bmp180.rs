@@ -72,7 +72,7 @@ pub struct BMP180NonOwned<I2C> {
 
 impl<I2C: Write + WriteRead + Read> BMP180NonOwned<I2C> {
     /// Create device driver instance.
-    pub fn new(i2c: &mut I2C) -> Self {
+    pub fn new(_i2c: &mut I2C) -> Self {
         BMP180NonOwned {
             _marker: core::marker::PhantomData,
             mode: Mode::UltraHighResolution,

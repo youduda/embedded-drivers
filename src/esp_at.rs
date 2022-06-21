@@ -5,6 +5,7 @@
 use core::fmt::Write;
 use core::str;
 use embedded_hal::serial;
+use embedded_hal::blocking::delay::DelayMs;
 use nb::block;
 
 use crate::ByteMutWriter;
@@ -280,13 +281,13 @@ where
         })
     }
 
-    pub fn tcp_send(&mut self, host: &str, port: u16, buf: &[u8]) -> Result<(), EspAtError<ER, EW>> {
+    pub fn tcp_send<D: DelayMs<u8>>(&mut self, host: &str, port: u16, buf: &[u8], delay: &mut D) -> Result<(), EspAtError<ER, EW>> {
         self.connect_tcp(host, port).map_err(|_| EspAtError::NoConnection)?;
         self.send(buf)?;
         // read 1 packet
         let _ = self.read();
         // read all remain packets
-        self.skip_read()?;
+        self.skip_read(delay)?;
         self.close()
     }
 
@@ -328,14 +329,11 @@ where
 
     /// Skip all possible data.
     /// Skip and send "AT", if it returns OK, then all read data is received.
-    pub fn skip_read(&mut self) -> Result<(), EspAtError<ER, EW>> {
+    pub fn skip_read<D: DelayMs<u8>>(&mut self, delay: &mut D) -> Result<(), EspAtError<ER, EW>> {
         loop {
             // TODO: use delay
-            for _ in 0..5_000_000 {
-                unsafe {
-                    asm!("nop");
-                }
-            }
+            // at 240 MHz 5 M cycles are ~20 ms
+            delay.delay_ms(20);
             self.skip_to_next();
 
             let _ = self.send_command("AT");
